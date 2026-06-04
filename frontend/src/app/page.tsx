@@ -711,7 +711,7 @@ export default function HomePage() {
 
   // Real niches from DB
   const { data: niches = [], isLoading, mutate } = useSWR<Niche[]>(
-    `${API}/api/niches?sort=${sort}${category !== 'all' ? `&category=${category}` : ''}`,
+    `${API}/api/niches/?sort=${sort}${category !== 'all' ? `&category=${category}` : ''}`,
     fetcher, { refreshInterval: scanning ? 3000 : 0 }
   )
 
