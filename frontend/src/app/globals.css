@@ -6,7 +6,7 @@
 @layer base {
   * { box-sizing: border-box; }
   html { font-family: 'Inter', system-ui, sans-serif; }
-  body { background: #f8f8f7; color: #0f0f0f; -webkit-font-smoothing: antialiased; }
+  body { font-size: 16px; font-family: "Poppins", system-ui, sans-serif; background: #f8f8f7; color: #0f0f0f; -webkit-font-smoothing: antialiased; }
   ::selection { background: #EEEDFE; }
 }
 
