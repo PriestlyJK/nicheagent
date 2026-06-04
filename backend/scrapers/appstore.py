@@ -187,19 +187,7 @@ def scrape_appstore_signals(
 ) -> list[dict]:
     """Sync wrapper."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    scrape_appstore_signals_async(queries, max_apps_per_query)
-                )
-                return future.result(timeout=60)
-        else:
-            return loop.run_until_complete(
-                scrape_appstore_signals_async(queries, max_apps_per_query)
-            )
+        return asyncio.run(scrape_appstore_signals_async(queries, max_apps_per_query))
     except Exception as e:
         print(f"[AppStore] Scrape failed: {e}")
         return []

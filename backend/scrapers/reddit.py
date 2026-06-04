@@ -8,7 +8,7 @@ PAIN_PHRASES = ["wish there was", "frustrated with", "no good solution", "sick o
 def scrape_reddit_posts(query: str, subreddit: str = None, limit: int = 10) -> list[dict]:
     results = []
     try:
-        params = {"limit": limit, "sort": "score", "body": query}
+        params = {"limit": limit, "sort": "score", "query": query}
         if subreddit:
             params["subreddit"] = subreddit
         with httpx.Client(headers={"User-Agent": "NicheAgent/1.0"}, timeout=15.0) as client:
