@@ -96,6 +96,7 @@ Return JSON array. Each niche:
 
 def analyze_signals(
     signals: list[dict],
+    existing_names: list[str] = None,
     user_profile: Optional[dict] = None,
     language: str = "en",
 ) -> list[dict]:
