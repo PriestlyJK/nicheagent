@@ -47,7 +47,7 @@ function ScoreBox({ label, value, color, why, source, details, bgLight, icon }: 
         <p className="text-[10px] font-semibold text-neutral-400 mt-1.5 truncate">{source}</p>
       </div>
       {open && (
-        <div className="border-t px-4 py-3" style={{ borderColor: color + '20', background: bgLight }}>
+        <div className="border-t px-4 py-3 max-h-[200px] overflow-y-auto" style={{ borderColor: color + '20', background: bgLight }}>
           <p className="text-[12px] font-bold leading-relaxed mb-2" style={{ color }}>{why}</p>
           {details?.map((d, i) => (
             <div key={i} className="flex gap-2 items-start mb-2 bg-white/60 rounded-lg px-2.5 py-2">
