@@ -271,6 +271,7 @@ export default function HomePage() {
   const [scanId, setScanId]     = useState<string|null>(null)
   const [showScan, setShowScan] = useState(false)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
+  const [activeScanId, setActiveScanId] = useState<string|null>(null)
   const [searchQ, setSearchQ]   = useState('')
 
   const apiUrl = category === 'all'
@@ -317,6 +318,7 @@ export default function HomePage() {
       })
       const data = await res.json()
       setScanId(data.id)
+      setActiveScanId(data.id)
     } catch {
       setScanning(false)
     }
@@ -326,9 +328,10 @@ export default function HomePage() {
     setSavedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
 
-  const filtered = niches.filter(n =>
-    !searchQ || n.name.toLowerCase().includes(searchQ.toLowerCase()) || n.why_summary?.toLowerCase().includes(searchQ.toLowerCase())
-  )
+  const filtered = niches.filter(n => {
+    if (activeScanId && (n as any).scan_id && (n as any).scan_id !== activeScanId) return false
+    return true
+  })
 
   return (
     <div style={{ fontFamily: "'Poppins', system-ui, sans-serif" }} className="min-h-screen bg-[#F2F0EB]">
@@ -377,9 +380,17 @@ export default function HomePage() {
             {/* Niches grid */}
             <div>
               <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
                 <p className="text-[14px] font-black text-[#0f0f0f]">Top opportunities</p>
+                  {activeScanId && (
+                    <button onClick={() => setActiveScanId(null)}
+                      className="text-[11px] font-bold text-[#534AB7] hover:underline">
+                      Show all niches →
+                    </button>
+                  )}
+                </div>
                 <p className="text-[12px] font-semibold text-neutral-400">
-                  {filtered.length} found · by {sort.replace('_',' ')} · Updated live
+                  {filtered.length} found · {activeScanId ? 'from this scan' : `by ${sort.replace('_',' ')}`} · Updated live
                 </p>
               </div>
 
