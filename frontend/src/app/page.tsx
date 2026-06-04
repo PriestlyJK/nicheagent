@@ -313,6 +313,7 @@ export default function HomePage() {
       const res = await fetch(`${API}/api/niches/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topics: queries }),
       })
       const data = await res.json()
       setScanId(data.id)

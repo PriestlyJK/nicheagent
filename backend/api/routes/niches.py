@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from db.client import get_db
 from db.models import NicheOut, ScanOut
@@ -47,10 +48,14 @@ def get_niches(
 
 
 # ── SCAN — must be before /{niche_id} ──────────────────────────────────────
+class ScanRequest(BaseModel):
+    topics: list[str] = []
+
 @router.post("/scan", response_model=ScanOut)
-def trigger_scan(background_tasks: BackgroundTasks):
+def trigger_scan(background_tasks: BackgroundTasks, req: ScanRequest = None):
     db = get_db()
     scan_id = str(uuid.uuid4())
+    custom_topics = (req.topics if req and req.topics else [])
     db.table("scans").insert({
         "id": scan_id,
         "status": "running",
@@ -59,7 +64,7 @@ def trigger_scan(background_tasks: BackgroundTasks):
         "niches_found": 0,
         "signals_found": 0,
     }).execute()
-    background_tasks.add_task(_run_scan, scan_id)
+    background_tasks.add_task(_run_scan, scan_id, custom_topics)
     return {
         "id": scan_id, "status": "running", "sources_done": [],
         "niches_found": 0, "signals_found": 0, "triggered_by": "manual",
@@ -104,7 +109,7 @@ def get_roadmap(
 
 
 # ── Background scan ────────────────────────────────────────────────────────
-def _run_scan(scan_id: str):
+def _run_scan(scan_id: str, custom_topics: list[str] = []):
     """
     Simple sync scan — no async, no event loop issues.
     1. App Store (works 100%)
@@ -125,9 +130,11 @@ def _run_scan(scan_id: str):
 
     try:
         # ── 1. App Store ─────────────────────────────────────────────────
+        topics_to_use = custom_topics if custom_topics else SCAN_TOPICS
+        print(f"[Scan] Topics: {topics_to_use[:3]}")
         print("[Scan] Starting App Store scrape...")
         try:
-            appstore_queries = SCAN_TOPICS[:6]
+            appstore_queries = topics_to_use[:6]
             app_signals = scrape_appstore_signals(appstore_queries, max_apps_per_query=4)
             all_signals.extend(app_signals)
             sources_done.append("appstore")
@@ -150,7 +157,7 @@ def _run_scan(scan_id: str):
         # ── 3. Reddit (Arctic Shift) ──────────────────────────────────────
         print("[Scan] Starting Reddit scrape...")
         try:
-            reddit_signals = scrape_pain_signals(SCAN_TOPICS[:5], limit_per_query=8)
+            reddit_signals = scrape_pain_signals(topics_to_use[:5], limit_per_query=8)
             all_signals.extend(reddit_signals)
             sources_done.append("reddit")
             update_status(sources_done, len(all_signals))
