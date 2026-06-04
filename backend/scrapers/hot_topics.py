@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Hot Topics engine.
 Scrapes trending startup/SaaS discussions from Reddit + HackerNews.
