@@ -230,6 +230,12 @@ def _run_scan(scan_id: str):
                         comp_clean["strengths"] = [comp_clean["strengths"]]
                     if not isinstance(comp_clean.get("gaps"), list):
                         comp_clean["gaps"] = []
+                    # Fix team_size: convert "11-50" string to integer (take lower bound)
+                    if "team_size" in comp_clean and isinstance(comp_clean["team_size"], str):
+                        try:
+                            comp_clean["team_size"] = int(comp_clean["team_size"].split("-")[0])
+                        except:
+                            comp_clean.pop("team_size", None)
                     if comp_clean.get("name"):
                         try:
                             db.table("competitors").insert(comp_clean).execute()
