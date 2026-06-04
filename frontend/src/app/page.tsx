@@ -730,7 +730,7 @@ export default function HomePage() {
       const profile = typeof window !== 'undefined'
         ? JSON.parse(localStorage.getItem('nicheagent_profile') || '{}')
         : {}
-      await fetch(`${API}/api/scan`, {
+      await fetch(`${API}/api/niches/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
