@@ -145,7 +145,7 @@ def _run_scan(scan_id: str):
 
         # 5. App Store (fixed scraper with real 1-star reviews)
         for topic in SCAN_TOPICS[:2]:
-            app_signals = appstore.scrape_pain_signals([topic])
+            app_signals = appstore.scrape_appstore_signals([topic])
             all_signals.extend(app_signals)
         sources_done.append("appstore")
 
