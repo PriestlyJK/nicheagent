@@ -81,6 +81,20 @@ def get_scan_status(scan_id: uuid.UUID):
     return result.data
 
 
+
+@router.get("/signals")
+def get_signals(
+    source: str | None = None,
+    limit: int = Query(20, le=100),
+):
+    """Get scraped signals by source for sliders. Must be before /{niche_id}."""
+    db = get_db()
+    query = db.table("signals").select("id,source,source_url,title,content,metadata,created_at")
+    if source:
+        query = query.eq("source", source)
+    result = query.order("created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
 # ── Niche detail ───────────────────────────────────────────────────────────
 @router.get("/{niche_id}")
 def get_niche(niche_id: uuid.UUID):
@@ -267,18 +281,3 @@ def _run_scan(scan_id: str, custom_topics: list[str] = []):
             "status": "failed",
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", scan_id).execute()
-
-
-@router.get("/signals")
-def get_signals(
-    source: str | None = None,
-    limit: int = Query(20, le=100),
-):
-    """Get scraped signals by source for sliders."""
-    db = get_db()
-    query = db.table("signals").select("*")
-    if source:
-        query = query.eq("source", source)
-    query = query.order("created_at", desc=True).limit(limit)
-    result = query.execute()
-    return result.data or []
