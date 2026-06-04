@@ -476,12 +476,7 @@ export default function HomePage() {
             {/* Hot banners */}
             {niches.length >= 3 && !scanning && <HotBanners niches={niches} />}
 
-            {/* Source sliders */}
-            {!scanning && (
-              <div className="mb-3">
-                {SOURCES.map(s => <SourceSlider key={s.id} source={s} />)}
-              </div>
-            )}
+
 
             {/* Scan animation */}
             {scanning && <ScanAnimation />}
