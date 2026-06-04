@@ -237,6 +237,12 @@ def _run_scan(scan_id: str, custom_topics: list[str] = []):
                     saved_count += 1
                     print(f"[Scan] Saved: {n_clean.get('name')}")
 
+                    # Link signals to this niche based on source overlap
+                    try:
+                        db.table("signals").update({"niche_id": niche_id}).eq("scan_id", scan_id).is_("niche_id", "null").limit(15).execute()
+                    except Exception as se:
+                        print(f"[Scan] Signal link error: {se}")
+
                     for comp in competitors:
                         try:
                             comp["niche_id"] = niche_id
