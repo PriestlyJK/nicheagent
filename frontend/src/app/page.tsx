@@ -354,12 +354,13 @@ export default function HomePage() {
                 <div className="relative flex-1">
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                   <input value={searchQ} onChange={e=>setSearchQ(e.target.value)}
-                    placeholder="Search niches, topics, keywords…"
+                    onKeyDown={e => { if (e.key === 'Enter' && searchQ.trim()) { startScan([searchQ.trim()]); setSearchQ('') } }}
+                    placeholder="Search any topic… press Enter to scan"
                     className="w-full pl-9 pr-3 py-2 text-[13px] bg-[#F2F0EB] border border-black/10 rounded-lg text-[#0f0f0f] placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-[#0f0f0f] focus:border-[#0f0f0f] transition-colors" />
                 </div>
-                <button onClick={() => setShowScan(true)}
+                <button onClick={() => { if (searchQ.trim()) { startScan([searchQ.trim()]); setSearchQ('') } else { setShowScan(true) } }}
                   className="flex items-center gap-1.5 px-4 py-2 bg-[#0f0f0f] text-white rounded-lg text-[13px] font-black hover:bg-neutral-800 transition-colors flex-shrink-0">
-                  <RefreshCw size={13} /> New scan
+                  <RefreshCw size={13} /> {searchQ.trim() ? 'Scan this →' : 'New scan'}
                 </button>
               </div>
             </div>
@@ -391,7 +392,7 @@ export default function HomePage() {
                   <p className="text-[13px] font-semibold text-neutral-500 mb-5">
                     Trigger a scan to discover opportunities from Reddit, App Store, HackerNews and more.
                   </p>
-                  <button onClick={() => setShowScan(true)}
+                  <button onClick={() => { if (searchQ.trim()) { startScan([searchQ.trim()]); setSearchQ('') } else { setShowScan(true) } }}
                     className="inline-flex items-center gap-2 bg-[#0f0f0f] text-white px-5 py-2.5 rounded-xl text-[13px] font-black hover:bg-neutral-800 transition-colors">
                     <Zap size={14} /> Start first scan
                   </button>
