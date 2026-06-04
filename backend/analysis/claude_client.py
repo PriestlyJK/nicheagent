@@ -58,7 +58,7 @@ Prioritize niches matching this profile. Mark fit_score higher for good profile 
 SIGNALS TO ANALYZE:
 {signals_text}
 
-Identify 8-12 distinct startup niche opportunities from these signals.
+Identify 5-7 distinct startup niche opportunities from these signals.
 
 Return JSON array. Each niche:
 {{
@@ -112,7 +112,7 @@ def analyze_signals(
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=8000,
+            max_tokens=32000,
             system=ANALYSIS_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -186,7 +186,7 @@ No other changes."""
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=3000,
+            max_tokens=8000,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
@@ -284,7 +284,7 @@ Each phase should have 4-6 specific steps."""
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=5000,
+            max_tokens=16000,
             system=ROADMAP_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -319,7 +319,7 @@ Return the complete translated JSON with same structure."""
 
         response = client.messages.create(
             model=MODEL,
-            max_tokens=5000,
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
@@ -348,7 +348,7 @@ Return as JSON array of strings."""
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",  # Fast, cheap for quick ideas
-            max_tokens=500,
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
