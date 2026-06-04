@@ -274,9 +274,10 @@ export default function HomePage() {
   const [activeScanId, setActiveScanId] = useState<string|null>(null)
   const [searchQ, setSearchQ]   = useState('')
 
+  const sortParam = sort === 'created_at' ? 'signal_score' : sort
   const apiUrl = category === 'all'
-    ? `${API}/api/niches/?sort=${sort}`
-    : `${API}/api/niches/?sort=${sort}&category=${encodeURIComponent(category)}`
+    ? `${API}/api/niches/?sort=${sortParam}&limit=50`
+    : `${API}/api/niches/?sort=${sortParam}&limit=50&category=${encodeURIComponent(category)}`
 
   const { data: niches = [], isLoading, mutate } = useSWR<Niche[]>(apiUrl, fetcher, {
     refreshInterval: scanning ? 5000 : 0,
@@ -291,6 +292,7 @@ export default function HomePage() {
         const data = await res.json()
         if (data.status === 'done' || data.status === 'failed') {
           setScanning(false)
+          setSort('created_at')
           setScanId(null)
           mutate()
         }
@@ -328,7 +330,8 @@ export default function HomePage() {
     setSavedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
 
-  const filtered = niches.filter(n => {
+  const sortedNiches = sort === 'created_at' ? [...niches].sort((a,b) => new Date((b as any).created_at||0).getTime() - new Date((a as any).created_at||0).getTime()) : niches
+  const filtered = sortedNiches.filter((n: any) => {
     if (activeScanId && (n as any).scan_id && (n as any).scan_id !== activeScanId) return false
     return true
   })
