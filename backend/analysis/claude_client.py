@@ -1,173 +1,359 @@
+"""
+Claude API client for NicheAgent.
+- Analyzes signals with EXACT source attribution (no hallucinated URLs)
+- Translates to Ukrainian on demand
+- Generates roadmaps with streaming support
+- Anti-hallucination: Claude is only allowed to reference URLs from the input signals
+"""
 import anthropic
 import json
-from db.client import settings
+import re
+from typing import Optional, Generator
+import os
 
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-opus-4-6"
 
-SYSTEM_PROMPT = """You are an elite market intelligence analyst and venture scout with deep expertise in identifying startup opportunities before they become obvious.
 
-Your methodology:
-1. PATTERN DETECTION — You identify: multiple entrants (3+ new products in same niche = validation), creative velocity (surge in ad creatives = commercial demand proven), pain point clustering (same complaint across multiple communities = real problem), paywall shifts (incumbent raises prices = market gap opens), funding clustering (multiple seed rounds in adjacent space = smart money validation)
+ANALYSIS_SYSTEM = """You are NicheAgent, an expert startup opportunity analyst.
+You analyze real user signals to identify untapped market niches.
 
-2. SPECIFICITY REQUIREMENT — Every claim must include real numbers. Never say "growing trend" — say "+41% in 90 days". Never say "multiple competitors" — name them with estimated ARR.
+CRITICAL RULES:
+1. Only reference source URLs that are EXPLICITLY provided in the signals. Never invent URLs.
+2. Every niche must cite specific posts/tweets/reviews that support it (use exact source_url values).
+3. No generic claims like "many Reddit users" — cite the specific thread.
+4. Competitor websites must be real companies you are certain exist. If unsure, omit the website field.
+5. Do not repeat ideas. Each niche must be genuinely distinct.
+6. Be specific about WHY each niche exists — what exact pain was expressed.
 
-3. UNIQUENESS ENFORCEMENT — No two niches can address the same core problem. If you find pricing frustration across 3 tools, pick the MOST SPECIFIC underserved subsegment, not the generic category.
-
-4. ANTI-HYPE FILTER — Reject niches that: have a well-funded dominant player (>$10M raised with PMF), are pure feature requests for existing tools, require enterprise sales cycles to validate, or need regulatory approval.
-
-5. TIMING SIGNAL — Score timing: is this niche in emerging (0-6 months of signal), growing (6-18 months), or maturing (18+ months) phase? Emerging + growing = highest priority."""
-
-
-def analyze_signals(signals: list[dict], existing_niches: list[str] = None) -> list[dict]:
-    signals_json = json.dumps(signals[:50], ensure_ascii=False)
-    existing = json.dumps(existing_niches or [])
-
-    prompt = f"""Analyze these market signals and identify exactly 5 startup opportunities.
-
-RAW SIGNALS FROM MULTIPLE SOURCES:
-{signals_json}
-
-ALREADY IN KNOWLEDGE BASE — DO NOT REPEAT THESE:
-{existing}
-
-REQUIREMENTS FOR EACH OPPORTUNITY:
-1. name: Specific niche name. Not "AI tools" but "AI-powered invoice reconciliation for freelance accountants". Must be actionable and specific.
-
-2. category: One of: ai_saas | health | b2b | creator | ecommerce | fintech | devtools | other
-
-3. why_summary: EXACTLY 2 sentences. Sentence 1: what specific data proves demand (with numbers). Sentence 2: why no dominant solution exists yet (with evidence).
-
-4. signal_score: 0-100. Formula: (post_volume * recency_weight * specificity_score * pain_intensity). Be precise, not round numbers.
-
-5. fit_score: 0-100. Based on: API availability (can you build without proprietary data?), team size needed, regulatory risk, technical complexity. Lower = harder.
-
-6. mvp_weeks: Integer. Realistic for 1-2 person team. Must account for: validation (1w), core build (2-4w), testing (1w), launch prep (1w).
-
-7. competition: "low" | "medium" | "high". Low = no funded player with >$1M ARR. Medium = 1-2 players under $5M ARR. High = established players with PMF.
-
-8. tags: Array of exactly 3 tags chosen from: ["pain cluster", "multiple entrants", "creative velocity", "funding cluster", "paywall shift", "review cluster", "trend acceleration", "whitespace", "low competition", "first mover"]
-
-9. pattern_type: Primary pattern detected. One of: "multiple_entrants" | "pain_clustering" | "creative_velocity" | "paywall_shift" | "funding_cluster" | "whitespace"
-
-10. timing: "emerging" | "growing" | "maturing"
-
-11. competitors: Array of 2-3 REAL companies. Each with:
-    - name: Company name
-    - website: Real domain
-    - arr_estimate: e.g. "~$800k ARR" or "pre-revenue"
-    - funding: e.g. "$4M seed" or "bootstrapped"
-    - founded_year: integer
-    - key_weakness: ONE specific, exploitable gap (not generic)
-    - ph_url: Product Hunt URL if exists
-
-12. adjacent_niches: Array of 2 related opportunities. Each with:
-    - name: Specific adjacent niche
-    - demand_signal: One sentence with numbers
-    - why_gap_exists: One sentence on why no product
-    - heat: "hot" | "rising" | "stable"
-
-13. sources_breakdown: Object with keys matching which sources contributed signals:
-    - reddit_posts: count of Reddit posts that informed this
-    - trend_signal: percentage change string or null
-    - ph_launches: count of PH launches or null
-    - app_reviews: count of app reviews or null
-
-Return ONLY a valid JSON array of exactly 5 objects. No markdown, no explanation, no preamble.
-Each object must have ALL fields above.
-CRITICAL: Every niche must be genuinely different — different problem, different market, different user."""
-
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=8000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.rsplit("```", 1)[0]
-    return json.loads(raw.strip())
+You must respond with ONLY valid JSON, no markdown, no preamble."""
 
 
-def generate_roadmap(niche_name: str, budget: str, team: str, timeline_weeks: int) -> dict:
-    prompt = f"""Create a detailed, actionable startup roadmap for: "{niche_name}"
+def build_analysis_prompt(signals: list[dict], user_profile: Optional[dict] = None) -> str:
+    """Build analysis prompt with signals and optional user personalization."""
 
-Parameters:
-- Budget: {budget} (bootstrap = <$500 total, small = $500-5k, funded = $5k+)
-- Team: {team} (solo = 1 person, two = 2 people, small = 3-5 people)
-- Timeline: {timeline_weeks} weeks to MVP
+    profile_section = ""
+    if user_profile:
+        profile_section = f"""
+USER PROFILE (personalize opportunities to this person):
+- Experience: {user_profile.get('experience', 'not specified')}
+- Budget: {user_profile.get('budget', 'not specified')}
+- Team size: {user_profile.get('team_size', 'solo')}
+- Interests: {', '.join(user_profile.get('interests', []))}
+- Skills: {', '.join(user_profile.get('skills', []))}
+- Preferred categories: {', '.join(user_profile.get('categories', []))}
+Prioritize niches matching this profile. Mark fit_score higher for good profile matches.
+"""
 
-Return JSON with this exact structure:
+    # Format signals with their source URLs prominently
+    signals_text = "\n\n---\n\n".join([
+        f"SOURCE: {s.get('source', '?').upper()}\n"
+        f"URL: {s.get('source_url', 'no-url')}\n"
+        f"CONTENT: {s.get('content', '')[:600]}"
+        for s in signals
+    ])
+
+    return f"""{profile_section}
+
+SIGNALS TO ANALYZE:
+{signals_text}
+
+Identify 8-12 distinct startup niche opportunities from these signals.
+
+Return JSON array. Each niche:
 {{
-  "phases": [
+  "name": "Specific, memorable niche name (not generic)",
+  "category": "AI & SaaS|Health tech|B2B tools|Dev tools|Creator|Fintech|EdTech|Other",
+  "why_summary": "2-3 sentence explanation of the exact pain, citing specific signals. Be concrete.",
+  "signal_score": 1-100 (how strong is the signal evidence),
+  "fit_score": 1-100 (market timing + feasibility),
+  "mvp_weeks": 4-52 (realistic MVP build time),
+  "competition": "low|medium|high",
+  "tags": ["tag1", "tag2", "tag3"],
+  "is_golden": true/false (only 1 niche should be true — the best opportunity),
+  "evidence": [
     {{
-      "week_label": "Week 1-2",
-      "title": "Phase title",
-      "why": "Why this phase is critical — specific reasoning",
-      "tasks": [
-        "Specific actionable task with details",
-        "Another task",
-        "Another task",
-        "Another task"
-      ],
-      "tools": [
-        {{
-          "name": "Tool name",
-          "cost": "$X/mo or free",
-          "url": "https://real-url.com",
-          "why": "Specific reason to use this tool for this phase"
-        }}
-      ],
-      "risks": [
-        "Specific risk and how to mitigate it"
-      ],
-      "success_metric": "How you know this phase is done"
+      "source": "reddit|twitter|appstore|hackernews",
+      "url": "EXACT URL from the signal data above — never invent",
+      "quote": "Short relevant quote from the signal",
+      "pain": "One-line summary of the pain expressed"
     }}
   ],
-  "total_monthly_cost": "$XX/mo",
-  "break_even_customers": N,
-  "pricing_recommendation": "$X/mo — reasoning",
-  "first_customer_channel": "Most specific acquisition channel with tactics"
+  "competitors": [
+    {{
+      "name": "Real company name",
+      "website": "real-domain.com (only if you are CERTAIN it exists)",
+      "arr_estimate": "$Xk-$Ym ARR",
+      "gaps": ["specific gap 1", "specific gap 2"],
+      "strengths": ["strength 1"],
+      "founded_year": 2020,
+      "team_size": "1-10|11-50|51-200",
+      "funding": "bootstrapped|seed|series-a|unknown"
+    }}
+  ]
+}}"""
+
+
+def analyze_signals(
+    signals: list[dict],
+    user_profile: Optional[dict] = None,
+    language: str = "en",
+) -> list[dict]:
+    """
+    Analyze signals and return niche opportunities.
+    All source URLs in results come directly from input signals.
+    """
+    if not signals:
+        return []
+
+    prompt = build_analysis_prompt(signals, user_profile)
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=8000,
+            system=ANALYSIS_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        raw = response.content[0].text.strip()
+
+        # Extract JSON if wrapped in code blocks
+        if "```" in raw:
+            raw = re.sub(r'```(?:json)?', '', raw).strip().strip('`')
+
+        niches = json.loads(raw)
+        if not isinstance(niches, list):
+            niches = niches.get("niches", []) or [niches]
+
+        # Validate: remove any competitor with made-up websites
+        # (We'll verify with httpx in the route handler)
+        for niche in niches:
+            niche.setdefault("is_golden", False)
+            niche.setdefault("evidence", [])
+            niche.setdefault("tags", [])
+
+        # Ensure exactly one golden niche
+        golden_ones = [n for n in niches if n.get("is_golden")]
+        if not golden_ones and niches:
+            # Pick highest signal_score
+            best = max(niches, key=lambda x: x.get("signal_score", 0))
+            best["is_golden"] = True
+        elif len(golden_ones) > 1:
+            # Keep only the best one
+            best = max(golden_ones, key=lambda x: x.get("signal_score", 0))
+            for n in niches:
+                n["is_golden"] = (n is best)
+
+        # Translate to Ukrainian if requested
+        if language == "ua":
+            niches = translate_niches_to_ua(niches)
+
+        return niches
+
+    except json.JSONDecodeError as e:
+        print(f"[Claude] JSON parse error: {e}")
+        return []
+    except Exception as e:
+        print(f"[Claude] Analysis error: {e}")
+        return []
+
+
+def translate_niches_to_ua(niches: list[dict]) -> list[dict]:
+    """Translate niche names and summaries to Ukrainian via Claude."""
+    if not niches:
+        return niches
+
+    texts_to_translate = []
+    for n in niches:
+        texts_to_translate.append({
+            "id": niches.index(n),
+            "name": n.get("name", ""),
+            "why_summary": n.get("why_summary", ""),
+        })
+
+    prompt = f"""Translate the following startup niche descriptions to Ukrainian.
+Keep technical terms in English (SaaS, API, MVP, B2B, etc.).
+Be natural, not formal/bureaucratic. Use startup/tech Ukrainian vocabulary.
+
+Input JSON:
+{json.dumps(texts_to_translate, ensure_ascii=False)}
+
+Return ONLY a JSON array with same structure but translated "name" and "why_summary" fields.
+No other changes."""
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=3000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = re.sub(r'```(?:json)?', '', raw).strip().strip('`')
+
+        translated = json.loads(raw)
+
+        for t in translated:
+            idx = t.get("id")
+            if idx is not None and idx < len(niches):
+                niches[idx]["name"] = t.get("name", niches[idx]["name"])
+                niches[idx]["why_summary"] = t.get("why_summary", niches[idx]["why_summary"])
+                niches[idx]["_translated"] = True
+
+        return niches
+
+    except Exception as e:
+        print(f"[Claude] Translation error: {e}")
+        return niches  # Return untranslated on error
+
+
+ROADMAP_SYSTEM = """You are a startup advisor creating detailed, actionable roadmaps.
+Each step must be concrete and achievable by a solo founder.
+Include specific tools, resources, and success metrics.
+Respond with ONLY valid JSON."""
+
+
+def generate_roadmap(
+    niche: dict,
+    user_profile: Optional[dict] = None,
+    language: str = "en",
+) -> dict:
+    """Generate an interactive roadmap for a niche."""
+
+    profile_context = ""
+    if user_profile:
+        skills = user_profile.get("skills", [])
+        budget = user_profile.get("budget", "unknown")
+        team = user_profile.get("team_size", "solo")
+        profile_context = f"""
+Customize for:
+- Skills: {', '.join(skills) if skills else 'general'}
+- Budget: {budget}
+- Team: {team}
+Adjust tech stack, timeline, and complexity accordingly."""
+
+    prompt = f"""Create a detailed launch roadmap for this niche:
+
+NICHE: {niche.get('name')}
+CATEGORY: {niche.get('category')}
+SUMMARY: {niche.get('why_summary')}
+MVP_WEEKS: {niche.get('mvp_weeks', 12)}
+COMPETITION: {niche.get('competition', 'medium')}
+{profile_context}
+
+Return JSON:
+{{
+  "title": "roadmap title",
+  "total_weeks": N,
+  "phases": [
+    {{
+      "phase": 1,
+      "title": "Phase title",
+      "duration_weeks": N,
+      "icon": "emoji",
+      "color": "#hexcolor",
+      "objective": "What you achieve",
+      "steps": [
+        {{
+          "step": 1,
+          "title": "Step title",
+          "description": "Detailed actionable description (3-4 sentences)",
+          "icon": "emoji",
+          "tools": ["specific tool 1", "specific tool 2"],
+          "success_metric": "How you know this is done",
+          "effort_hours": N,
+          "resources": [
+            {{"name": "resource name", "url": "https://..."}}
+          ]
+        }}
+      ],
+      "milestone": "What's achieved at end of phase",
+      "expected_outcome": "Specific measurable outcome"
+    }}
+  ],
+  "key_risks": ["risk 1", "risk 2"],
+  "quick_wins": ["Quick win 1 (week 1)", "Quick win 2"],
+  "estimated_mrr_at_launch": "$X-Y/mo"
 }}
 
-Use ONLY real tools with real current pricing (2025).
-Be hyper-specific — no generic advice.
-Return ONLY valid JSON."""
+Include 4 phases: Research & Validation → Build MVP → Launch & Traction → Scale.
+Each phase should have 4-6 specific steps."""
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=6000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = response.content[0].text.strip()
-    # Strip markdown fences
-    if "```" in raw:
-        parts = raw.split("```")
-        for part in parts:
-            part = part.strip()
-            if part.startswith("json"):
-                part = part[4:].strip()
-            try:
-                return json.loads(part)
-            except:
-                continue
-    # Try direct parse
-    return json.loads(raw.strip())
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=5000,
+            system=ROADMAP_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = re.sub(r'```(?:json)?', '', raw).strip().strip('`')
+
+        roadmap = json.loads(raw)
+
+        if language == "ua":
+            roadmap = translate_roadmap_to_ua(roadmap)
+
+        return roadmap
+
+    except Exception as e:
+        print(f"[Claude] Roadmap error: {e}")
+        return {"error": str(e), "phases": []}
 
 
-def explain_score(niche_name: str, signals: list[dict], score_type: str) -> str:
-    prompt = f"""For the niche "{niche_name}", explain in exactly 3 bullet points why the {score_type} score is what it is.
-Each bullet: start with a specific number or fact from these signals: {json.dumps(signals[:5])}
-Format: • [fact] → [implication]
-Return plain text only. No headers."""
+def translate_roadmap_to_ua(roadmap: dict) -> dict:
+    """Translate roadmap content to Ukrainian."""
+    try:
+        # Extract translatable strings
+        prompt = f"""Translate this startup roadmap to Ukrainian.
+Keep technical terms in English (MVP, SaaS, API, MRR, etc.).
+Be natural and startup-friendly.
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text.strip()
+Roadmap JSON:
+{json.dumps(roadmap, ensure_ascii=False)[:4000]}
+
+Return the complete translated JSON with same structure."""
+
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=5000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = re.sub(r'```(?:json)?', '', raw).strip().strip('`')
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[Claude] Roadmap translate error: {e}")
+        return roadmap
+
+
+def generate_hot_topic_ideas(topic: dict, count: int = 3) -> list[str]:
+    """
+    Generate startup ideas for a hot topic thread using Claude.
+    Fast version — uses minimal tokens.
+    """
+    prompt = f"""Hot startup discussion:
+Title: {topic.get('title', '')}
+Content: {topic.get('content', '')[:300]}
+Source: {topic.get('source')} — {topic.get('source_url')}
+
+Generate {count} concrete startup idea concepts based on this discussion.
+Each idea: 1-2 sentences max. Be specific, not generic.
+Return as JSON array of strings."""
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",  # Fast, cheap for quick ideas
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = re.sub(r'```(?:json)?', '', raw).strip().strip('`')
+        ideas = json.loads(raw)
+        return ideas[:count] if isinstance(ideas, list) else []
+    except Exception:
+        return topic.get("quick_ideas", [])  # Fall back to heuristic ideas

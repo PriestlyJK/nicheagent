@@ -2,6 +2,9 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from db.client import get_db
 from db.models import NicheOut, ScanOut
 from scrapers import reddit, trends, producthunt, metaads, appstore
+from scrapers.twitter import scrape_twitter_signals
+from scrapers.verify import verify_competitors
+from scrapers.hot_topics import scrape_hot_topics, cache_hot_topics, load_cached_hot_topics
 from analysis.claude_client import analyze_signals, generate_roadmap
 import uuid
 from datetime import datetime, timezone
@@ -33,7 +36,6 @@ def get_niches(
 # ── SCAN routes MUST come before /{niche_id} ──
 @router.post("/scan", response_model=ScanOut)
 def trigger_scan(background_tasks: BackgroundTasks):
-    """Trigger a new full market scan. Runs in background."""
     db = get_db()
     scan_id = str(uuid.uuid4())
     db.table("scans").insert({
@@ -54,6 +56,18 @@ def get_scan_status(scan_id: uuid.UUID):
     if not scan.data:
         raise HTTPException(404, "Scan not found")
     return scan.data
+
+
+# ── NEW: Hot topics endpoint ──
+@router.get("/hot-topics")
+def get_hot_topics(refresh: bool = False, limit: int = 15):
+    if not refresh:
+        cached = load_cached_hot_topics()
+        if cached:
+            return {"topics": cached[:limit], "from_cache": True}
+    topics = scrape_hot_topics(15)
+    cache_hot_topics(topics)
+    return {"topics": topics[:limit], "from_cache": False}
 
 
 # ── Niche detail routes ──
@@ -94,7 +108,7 @@ def _run_scan(scan_id: str):
     sources_done = []
 
     try:
-        # 1. Reddit
+        # 1. Reddit (fixed async scraper)
         signals = reddit.scrape_pain_signals(SCAN_TOPICS[:5])
         all_signals.extend(signals)
         sources_done.append("reddit")
@@ -126,23 +140,31 @@ def _run_scan(scan_id: str):
             all_signals.append(meta)
         sources_done.append("meta_ads")
 
-        # 5. App Store
+        # 5. App Store (fixed scraper with real 1-star reviews)
         for topic in SCAN_TOPICS[:2]:
             app_signals = appstore.scrape_niche_reviews(topic)
             all_signals.extend(app_signals)
         sources_done.append("appstore")
 
-        # get existing niche names to avoid dupes
+        # 6. Twitter/X (NEW — добавляємо тихо)
+        try:
+            twitter_signals = scrape_twitter_signals(SCAN_TOPICS[:3])
+            all_signals.extend(twitter_signals)
+            sources_done.append("twitter")
+            db.table("scans").update({"sources_done": sources_done}).eq("id", scan_id).execute()
+        except Exception as te:
+            print(f"[Scan] Twitter scrape skipped: {te}")
+
+        # existing niche names to avoid dupes
         existing = db.table("niches").select("name").execute()
         existing_names = [n["name"] for n in (existing.data or [])]
 
-        # store raw signals - only keep valid columns
-        SIG_ALLOWED = {"source","source_url","title","content","metadata","niche_id","scan_id"}
+        # store raw signals
+        SIG_ALLOWED = {"source", "source_url", "title", "content", "metadata", "niche_id", "scan_id"}
         clean_signals = []
         for sig in all_signals:
             sig["scan_id"] = scan_id
             sig_clean = {k: v for k, v in sig.items() if k in SIG_ALLOWED}
-            # ensure metadata is dict
             if "metadata" in sig_clean and not isinstance(sig_clean["metadata"], dict):
                 sig_clean["metadata"] = {"value": str(sig_clean["metadata"])}
             clean_signals.append(sig_clean)
@@ -151,52 +173,60 @@ def _run_scan(scan_id: str):
                 db.table("signals").insert(clean_signals).execute()
             except Exception as se:
                 print(f"[Scan] Signals batch insert error: {se}")
-                # try one by one
                 for s in clean_signals:
                     try:
                         db.table("signals").insert(s).execute()
-                    except:
+                    except Exception:
                         pass
 
-        # 6. Claude analysis
+        # 7. Claude analysis
         niches_data = analyze_signals(all_signals, existing_names)
 
-        # 7. Store niches + competitors
+        # 8. Store niches + verified competitors
+        NICHE_ALLOWED = {
+            "id", "name", "category", "why_summary", "signal_score", "fit_score",
+            "mvp_weeks", "competition", "tags", "scan_id"
+        }
+        COMP_ALLOWED = {
+            "niche_id", "name", "website", "arr_estimate", "funding",
+            "team_size", "founded_year", "gaps", "strengths", "ph_url", "li_url", "metadata"
+        }
+
         for niche in niches_data:
             competitors = niche.pop("competitors", [])
-            niche.pop("adjacent_niches", None)
-            niche.pop("pattern_type", None)
-            niche.pop("timing", None)
-            niche.pop("sources_breakdown", None)
+            # clean extra fields Claude sometimes returns
+            for key in ("adjacent_niches", "pattern_type", "timing", "sources_breakdown",
+                        "is_golden", "evidence", "_translated"):
+                niche.pop(key, None)
             niche["scan_id"] = scan_id
             if "id" not in niche:
                 niche["id"] = str(uuid.uuid4())
-            # Only keep columns that exist in schema
-            NICHE_ALLOWED = {
-                "id","name","category","why_summary","signal_score","fit_score",
-                "mvp_weeks","competition","tags","scan_id"
-            }
             niche_clean = {k: v for k, v in niche.items() if k in NICHE_ALLOWED}
-            # Ensure tags is a list
             if isinstance(niche_clean.get("tags"), str):
                 niche_clean["tags"] = [niche_clean["tags"]]
+            if not isinstance(niche_clean.get("tags"), list):
+                niche_clean["tags"] = []
 
             result = db.table("niches").insert(niche_clean).execute()
             if result.data:
                 niche_id = result.data[0]["id"]
-                COMP_ALLOWED = {
-                    "niche_id","name","website","arr_estimate","funding",
-                    "team_size","founded_year","gaps","strengths","ph_url","li_url","metadata"
-                }
+
+                # Verify competitor websites before saving
+                if competitors:
+                    try:
+                        competitors = verify_competitors(competitors)
+                    except Exception as ve:
+                        print(f"[Scan] Verify skipped: {ve}")
+
                 for comp in competitors:
                     comp["niche_id"] = niche_id
-                    # remove any fields not in schema
                     comp_clean = {k: v for k, v in comp.items() if k in COMP_ALLOWED}
-                    # convert gaps/strengths to list if string
                     if isinstance(comp_clean.get("gaps"), str):
                         comp_clean["gaps"] = [comp_clean["gaps"]]
                     if isinstance(comp_clean.get("strengths"), str):
                         comp_clean["strengths"] = [comp_clean["strengths"]]
+                    if not isinstance(comp_clean.get("gaps"), list):
+                        comp_clean["gaps"] = []
                     if comp_clean.get("name"):
                         try:
                             db.table("competitors").insert(comp_clean).execute()

@@ -1,157 +1,175 @@
+"""
+Reddit scraper via PullPush API.
+Returns posts with EXACT URLs, subreddit, author, score.
+Zero hallucination: if it's not in the API response, it's not in the output.
+"""
 import httpx
+import asyncio
 import time
-from datetime import datetime, timezone
+from typing import Optional
 
-SUBREDDITS_BY_CATEGORY = {
-    "startup": ["SideProject", "startups", "entrepreneur", "microsaas", "SaaS"],
-    "pain":    ["productmanagement", "smallbusiness", "freelance", "webdev"],
-    "hot":     ["technology", "business", "investing"],
-}
+PULLPUSH_BASE = "https://api.pullpush.io/reddit/search/submission/"
+PUSHSHIFT_FALLBACK = "https://api.pushshift.io/reddit/search/submission/"
 
-PAIN_KEYWORDS = [
-    "looking for a tool", "wish there was", "no solution", "too expensive",
-    "can't find", "alternative to", "anyone built", "pain point",
-    "frustrated with", "I'd pay for", "missing feature", "nobody has built",
-    "why is there no", "need a tool", "struggling with",
+PAIN_SUBREDDITS = [
+    "indiehackers", "SaaS", "startups", "Entrepreneur",
+    "smallbusiness", "solopreneur", "microsaas", "digitalnomad",
+    "freelance", "webdev", "productivity", "nocode",
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+PAIN_KEYWORDS = [
+    "I wish there was", "why is there no", "sick of", "frustrated with",
+    "can't find a tool", "looking for software", "does anyone know a tool",
+    "spending too much time", "manual process", "no good solution",
+    "pain point", "hate that", "wish someone would build",
+    "anyone else struggle", "biggest problem with",
+]
 
+async def _fetch_pullpush(
+    client: httpx.AsyncClient,
+    query: str,
+    subreddit: Optional[str] = None,
+    size: int = 25,
+    after_days: int = 90,
+) -> list[dict]:
+    """Fetch posts from PullPush. Returns raw posts with real metadata."""
+    after_ts = int(time.time()) - (after_days * 86400)
+    params = {
+        "q": query,
+        "size": size,
+        "sort": "desc",
+        "sort_type": "score",
+        "after": after_ts,
+    }
+    if subreddit:
+        params["subreddit"] = subreddit
 
-def _fetch_json(url: str, params: dict = None) -> dict:
     try:
-        r = httpx.get(url, params=params, headers=HEADERS, timeout=15, follow_redirects=True)
-        if r.status_code == 200:
-            return r.json()
+        resp = await client.get(PULLPUSH_BASE, params=params, timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json()
+        posts = data.get("data", [])
     except Exception as e:
-        print(f"[Reddit] fetch error {url}: {e}")
-    return {}
+        print(f"[Reddit] PullPush error for '{query}': {e}")
+        posts = []
 
-
-def scrape_rising_posts(subreddits: list[str] = None, limit: int = 25) -> list[dict]:
-    """Get posts currently gaining traction — rising feed."""
-    subs = subreddits or SUBREDDITS_BY_CATEGORY["startup"][:4]
     results = []
-    for sub in subs:
-        data = _fetch_json(f"https://www.reddit.com/r/{sub}/rising.json", {"limit": limit})
-        posts = data.get("data", {}).get("children", [])
-        for p in posts:
-            d = p.get("data", {})
-            results.append(_normalize_post(d, source_hint="rising"))
-        print(f"[Reddit] r/{sub}/rising: {len(posts)} posts")
-        time.sleep(1.5)
-    return [r for r in results if r]
+    for p in posts:
+        if not p.get("selftext") or p["selftext"] in ("[removed]", "[deleted]", ""):
+            continue
+        score = p.get("score", 0)
+        if score < 2:
+            continue
 
+        permalink = p.get("permalink", "")
+        post_id = p.get("id", "")
+        sub = p.get("subreddit", "")
+        title = p.get("title", "").strip()
+        body = p.get("selftext", "").strip()[:1500]
 
-def scrape_hot_posts(subreddits: list[str] = None, limit: int = 25) -> list[dict]:
-    """Get hot posts from last 24h — high engagement."""
-    subs = subreddits or SUBREDDITS_BY_CATEGORY["pain"][:3]
-    results = []
-    for sub in subs:
-        data = _fetch_json(f"https://www.reddit.com/r/{sub}/hot.json", {"limit": limit, "t": "day"})
-        posts = data.get("data", {}).get("children", [])
-        for p in posts:
-            d = p.get("data", {})
-            results.append(_normalize_post(d, source_hint="hot"))
-        print(f"[Reddit] r/{sub}/hot: {len(posts)} posts")
-        time.sleep(1.5)
-    return [r for r in results if r]
+        full_url = f"https://www.reddit.com{permalink}" if permalink else \
+                   f"https://www.reddit.com/r/{sub}/comments/{post_id}/"
 
+        results.append({
+            "source": "reddit",
+            "source_url": full_url,
+            "permalink": permalink,
+            "post_id": post_id,
+            "subreddit": sub,
+            "title": title,
+            "content": f"{title}\n\n{body}",
+            "score": score,
+            "num_comments": p.get("num_comments", 0),
+            "author": p.get("author", "[deleted]"),
+            "created_utc": p.get("created_utc", 0),
+            "query_used": query,
+        })
 
-def scrape_pain_search(topics: list[str], limit: int = 20) -> list[dict]:
-    """Search PullPush for pain-point posts about specific topics."""
-    results = []
-    for topic in topics:
-        try:
-            r = httpx.get(
-                "https://api.pullpush.io/reddit/search/submission/",
-                params={"q": topic, "size": limit, "sort": "desc", "sort_type": "score"},
-                headers=HEADERS, timeout=20, follow_redirects=True
-            )
-            if r.status_code == 200:
-                posts = r.json().get("data", [])
-                for p in posts:
-                    normalized = _normalize_pullpush(p)
-                    if normalized:
-                        results.append(normalized)
-                print(f"[Reddit] search '{topic}': {len(posts)} posts")
-            else:
-                print(f"[Reddit] search '{topic}': HTTP {r.status_code}")
-            time.sleep(1)
-        except Exception as e:
-            print(f"[Reddit] search error '{topic}': {e}")
     return results
 
 
-def scrape_pain_signals(topics: list[str]) -> list[dict]:
-    """Main pipeline: rising + hot + search."""
+async def scrape_pain_signals_async(
+    queries: list[str],
+    max_per_query: int = 20,
+    after_days: int = 90,
+) -> list[dict]:
+    """
+    Async parallel Reddit scrape. Returns deduplicated signals with EXACT URLs.
+    """
+    seen_ids = set()
     all_signals = []
 
-    # 1. Rising posts — gaining traction RIGHT NOW
-    rising = scrape_rising_posts(SUBREDDITS_BY_CATEGORY["startup"][:3], limit=20)
-    all_signals.extend(rising)
-    print(f"[Reddit] Rising: {len(rising)} posts")
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "NicheAgent/1.0 research bot"},
+        follow_redirects=True,
+    ) as client:
+        tasks = []
 
-    # 2. Hot posts from pain subreddits
-    hot = scrape_hot_posts(SUBREDDITS_BY_CATEGORY["pain"][:3], limit=20)
-    # filter to pain-related only
-    pain_hot = [p for p in hot if any(
-        kw in (p.get("title", "") + " " + p.get("content", "")).lower()
-        for kw in PAIN_KEYWORDS
-    )]
-    all_signals.extend(pain_hot)
-    print(f"[Reddit] Hot pain: {len(pain_hot)} posts")
+        # Query × top subreddits (focus mode)
+        for query in queries:
+            for sub in SUBREDDIT_TARGETS_FOR_QUERY(query):
+                tasks.append(_fetch_pullpush(client, query, sub, max_per_query, after_days))
 
-    # 3. PullPush search for specific topics
-    search_signals = scrape_pain_search(topics[:5], limit=20)
-    all_signals.extend(search_signals)
+            # Also search pain keywords in general
+            for kw in PAIN_KEYWORDS[:5]:
+                combined = f"{query} {kw}"
+                tasks.append(_fetch_pullpush(client, combined, None, 10, after_days))
 
-    # Deduplicate by title
-    seen = set()
-    unique = []
-    for s in all_signals:
-        key = s.get("title", "")[:60]
-        if key not in seen:
-            seen.add(key)
-            unique.append(s)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    print(f"[Reddit] Total unique signals: {len(unique)}")
-    return unique
+        for batch in results:
+            if isinstance(batch, Exception):
+                continue
+            for post in batch:
+                uid = post.get("post_id") or post.get("source_url")
+                if uid and uid not in seen_ids:
+                    seen_ids.add(uid)
+                    all_signals.append(post)
 
-
-def _normalize_post(d: dict, source_hint: str = "") -> dict | None:
-    if not d.get("title"):
-        return None
-    return {
-        "source": "reddit",
-        "source_url": f"https://reddit.com{d.get('permalink', '')}",
-        "title": d.get("title", ""),
-        "content": (d.get("selftext") or "")[:1000],
-        "metadata": {
-            "subreddit": d.get("subreddit", ""),
-            "score": d.get("score", 0),
-            "upvote_ratio": d.get("upvote_ratio", 0),
-            "num_comments": d.get("num_comments", 0),
-            "created_utc": d.get("created_utc", 0),
-            "source_type": source_hint,
-            "is_self": d.get("is_self", True),
-        },
-    }
+    # Sort by engagement
+    all_signals.sort(key=lambda x: x.get("score", 0) + x.get("num_comments", 0) * 2, reverse=True)
+    return all_signals
 
 
-def _normalize_pullpush(p: dict) -> dict | None:
-    if not p.get("title"):
-        return None
-    return {
-        "source": "reddit",
-        "source_url": f"https://reddit.com{p.get('permalink', '')}",
-        "title": p.get("title", ""),
-        "content": (p.get("selftext") or "")[:1000],
-        "metadata": {
-            "subreddit": p.get("subreddit", ""),
-            "score": p.get("score", 0),
-            "num_comments": p.get("num_comments", 0),
-            "created_utc": p.get("created_utc", 0),
-            "source_type": "search",
-        },
-    }
+def SUBREDDIT_TARGETS_FOR_QUERY(query: str) -> list[str]:
+    """Pick relevant subreddits based on query content."""
+    q = query.lower()
+    targets = ["indiehackers", "SaaS", "startups"]
+
+    if any(w in q for w in ["health", "medical", "fitness", "wellness"]):
+        targets += ["HealthIT", "digitalhealth", "QuantifiedSelf"]
+    if any(w in q for w in ["developer", "dev", "code", "api", "sdk"]):
+        targets += ["webdev", "programming", "devops"]
+    if any(w in q for w in ["marketing", "content", "seo", "social"]):
+        targets += ["marketing", "SEO", "content_marketing"]
+    if any(w in q for w in ["finance", "accounting", "invoice", "payroll"]):
+        targets += ["smallbusiness", "Entrepreneur", "accounting"]
+    if any(w in q for w in ["ai", "llm", "gpt", "automation"]):
+        targets += ["artificial", "MachineLearning", "ChatGPTPromptEngineering"]
+
+    return list(dict.fromkeys(targets))[:5]
+
+
+def scrape_pain_signals(
+    queries: list[str],
+    max_per_query: int = 20,
+    after_days: int = 90,
+) -> list[dict]:
+    """Sync wrapper for async scraper."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    scrape_pain_signals_async(queries, max_per_query, after_days)
+                )
+                return future.result(timeout=60)
+        else:
+            return loop.run_until_complete(
+                scrape_pain_signals_async(queries, max_per_query, after_days)
+            )
+    except Exception as e:
+        print(f"[Reddit] Scrape failed: {e}")
+        return []

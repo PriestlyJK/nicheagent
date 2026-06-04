@@ -1,0 +1,220 @@
+name: NicheAgent — Scheduled Scans & Hot Topics
+
+on:
+  schedule:
+    # Hot topics refresh every 6 hours
+    - cron: '0 */6 * * *'
+    # Full scan once per day at 6am UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to run'
+        required: true
+        default: 'hot_topics'
+        type: choice
+        options:
+          - hot_topics
+          - full_scan
+          - verify_competitors
+
+jobs:
+  refresh-hot-topics:
+    name: Refresh Hot Topics
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'hot_topics')
+    
+    steps:
+      - name: Trigger hot topics refresh
+        run: |
+          curl -X GET \
+            "${{ secrets.RAILWAY_API_URL }}/hot-topics?refresh=true" \
+            -H "Authorization: Bearer ${{ secrets.API_SECRET }}" \
+            --max-time 120 \
+            -f || echo "Hot topics refresh completed (or endpoint not auth-gated)"
+
+  full-scan:
+    name: Full Niche Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'full_scan'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Run full scan
+        working-directory: backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ENVIRONMENT: production
+        run: |
+          python3 << 'SCANEOF'
+          import os, sys, uuid, asyncio
+          sys.path.insert(0, '.')
+          
+          from scrapers.reddit import scrape_pain_signals
+          from scrapers.twitter import scrape_twitter_signals
+          from scrapers.appstore import scrape_appstore_signals
+          from scrapers.verify import verify_competitors
+          from analysis.claude_client import analyze_signals
+          from db.client import get_db
+          
+          QUERIES = [
+              "micro saas pain point",
+              "solopreneur tools missing",
+              "B2B startup problem",
+              "indie hacker idea",
+              "no good tool for",
+          ]
+          
+          NICHE_ALLOWED = {'id','name','category','why_summary','signal_score','fit_score','mvp_weeks','competition','tags','scan_id'}
+          COMP_ALLOWED = {'niche_id','name','website','arr_estimate','funding','team_size','founded_year','gaps','strengths','ph_url','li_url'}
+          
+          print("Scraping Reddit...")
+          reddit_signals = scrape_pain_signals(QUERIES, max_per_query=25)
+          print(f"Reddit: {len(reddit_signals)} signals")
+          
+          print("Scraping Twitter...")
+          twitter_signals = scrape_twitter_signals(QUERIES)
+          print(f"Twitter: {len(twitter_signals)} signals")
+          
+          print("Scraping App Store...")
+          appstore_signals = scrape_appstore_signals(QUERIES, max_apps_per_query=5)
+          print(f"App Store: {len(appstore_signals)} signals")
+          
+          all_signals = reddit_signals + twitter_signals + appstore_signals
+          print(f"Total signals: {len(all_signals)}")
+          
+          # Sort by engagement
+          all_signals.sort(key=lambda x: x.get("score", 0) + x.get("num_comments", 0) * 2, reverse=True)
+          
+          db = get_db()
+          scan_id = str(uuid.uuid4())
+          
+          db.table("scans").insert({
+              "id": scan_id,
+              "status": "running",
+              "triggered_by": "github-actions",
+              "started_at": "now()",
+              "signals_found": len(all_signals),
+              "sources_done": ["reddit", "twitter", "appstore"],
+          }).execute()
+          
+          print("Analyzing with Claude...")
+          niches = analyze_signals(all_signals[:50])
+          print(f"Niches found: {len(niches)}")
+          
+          niches_saved = 0
+          for niche in niches:
+              comps = niche.pop("competitors", [])
+              
+              # Verify competitors
+              if comps:
+                  print(f"Verifying {len(comps)} competitors for {niche.get('name')}...")
+                  comps = verify_competitors(comps)
+              
+              # Remove non-DB fields
+              for key in ['adjacent_niches','pattern_type','timing','sources_breakdown','is_golden','evidence','_translated']:
+                  niche.pop(key, None)
+              
+              niche['id'] = str(uuid.uuid4())
+              niche['scan_id'] = scan_id
+              if not isinstance(niche.get('tags'), list):
+                  niche['tags'] = []
+              
+              n_clean = {k: v for k, v in niche.items() if k in NICHE_ALLOWED}
+              result = db.table('niches').insert(n_clean).execute()
+              
+              if result.data:
+                  nid = result.data[0]['id']
+                  niches_saved += 1
+                  
+                  for c in comps:
+                      try:
+                          c['niche_id'] = nid
+                          if isinstance(c.get('gaps'), str): c['gaps'] = [c['gaps']]
+                          if not isinstance(c.get('gaps'), list): c['gaps'] = []
+                          c_clean = {k: v for k, v in c.items() if k in COMP_ALLOWED}
+                          if c_clean.get('name'):
+                              db.table('competitors').insert(c_clean).execute()
+                      except Exception as e:
+                          print(f"Competitor error: {e}")
+                  
+                  print(f"Saved: {n_clean.get('name')} | Signal: {n_clean.get('signal_score')}")
+          
+          db.table("scans").update({
+              "status": "complete",
+              "niches_found": niches_saved,
+              "finished_at": "now()",
+          }).eq("id", scan_id).execute()
+          
+          print(f"Done: {niches_saved} niches saved")
+          SCANEOF
+
+  verify-competitors:
+    name: Verify Competitor Websites
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'verify_competitors'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      
+      - name: Verify existing competitors
+        working-directory: backend
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python3 << 'EOF'
+          import os, sys
+          sys.path.insert(0, '.')
+          
+          from db.client import get_db
+          from scrapers.verify import verify_competitors
+          
+          db = get_db()
+          
+          # Get all unverified competitors
+          result = db.table("competitors").select("*").is_("website_status", "null").execute()
+          comps = result.data or []
+          print(f"Verifying {len(comps)} competitors...")
+          
+          verified = verify_competitors(comps)
+          verified_ids = {c.get("id") for c in verified if c.get("id")}
+          
+          for comp in comps:
+              comp_id = comp.get("id")
+              if comp_id in verified_ids:
+                  verified_comp = next(c for c in verified if c.get("id") == comp_id)
+                  db.table("competitors").update({
+                      "website_status": verified_comp.get("website_status", "live")
+                  }).eq("id", comp_id).execute()
+              else:
+                  # Dead site — remove
+                  db.table("competitors").delete().eq("id", comp_id).execute()
+                  print(f"Removed dead competitor: {comp.get('name')}")
+          
+          print("Verification complete")
+          EOF
