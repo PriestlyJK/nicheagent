@@ -102,7 +102,12 @@ def get_niche(niche_id: uuid.UUID):
     niche = db.table("niches").select("*").eq("id", str(niche_id)).single().execute()
     if not niche.data:
         raise HTTPException(404, "Niche not found")
-    signals = db.table("signals").select("*").eq("niche_id", str(niche_id)).execute()
+    signals_result = db.table("signals").select("*").eq("niche_id", str(niche_id)).execute()
+    signals = signals_result.data or []
+    # Fallback: if no direct signals, load from same scan
+    if not signals and niche.data.get("scan_id"):
+        scan_signals = db.table("signals").select("*").eq("scan_id", niche.data["scan_id"]).limit(10).execute()
+        signals = scan_signals.data or []
     competitors = db.table("competitors").select("*").eq("niche_id", str(niche_id)).execute()
     return {**niche.data, "signals": signals.data, "competitors": competitors.data}
 
