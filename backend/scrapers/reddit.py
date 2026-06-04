@@ -45,6 +45,7 @@ async def _fetch_pullpush(
         params["subreddit"] = subreddit
 
     try:
+        await asyncio.sleep(1.0)
         resp = await client.get(PULLPUSH_BASE, params=params, timeout=15.0)
         resp.raise_for_status()
         data = resp.json()
