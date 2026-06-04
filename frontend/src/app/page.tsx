@@ -23,6 +23,105 @@ const SCAN_STEPS = [
   { icon: '✦', label: 'Finding startup opportunities…' },
 ]
 
+
+const SOURCES = [
+  { id: 'reddit',     label: 'Reddit',     icon: '🔴', linkLabel: 'View thread', color: '#FF4500' },
+  { id: 'appstore',   label: 'App Store',  icon: '🍎', linkLabel: 'View review', color: '#007AFF' },
+  { id: 'hackernews', label: 'HackerNews', icon: '📰', linkLabel: 'View post',   color: '#FF6600' },
+]
+
+function SignalCard({ signal, source }: { signal: any; source: typeof SOURCES[0] }) {
+  const meta = signal.metadata || {}
+  const content = signal.content || ''
+  const lines = content.split("\n").filter((l: string) => l.trim().length > 30)
+  const quote = lines[0]?.slice(0, 200) || content.slice(0, 200)
+  const subreddit = meta.subreddit || signal.subreddit || ''
+  const appName = meta.app_name || ''
+  const score = meta.score || meta.rating_count || 0
+
+  return (
+    <div className="flex-shrink-0 w-[280pwhite border border-black/10 rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[13px]">{source.icon}</span>
+          <span className="text-[12px] font-black" style={{ color: source.color }}>
+            {subreddit ? `r/${subreddit}` : appName || source.label}
+          </span>
+        </div>
+        {score > 0 && (
+          <span className="text-[11px] font-bold text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded-md">
+            {score > 1000 ? `${Math.round(score/1000)}k` : score}
+          </span>
+        )}
+      </div>
+      <div className="border-l-2 pl-3" style={{ borderColor: source.color + "40" }}>
+        <p className="text-[13px] font-semibold text-[#0f0f0f] leading-relaxed line-clamp-4">"{quote}"</p>
+      </div>
+      {signal.source_url && (
+        <a href={signal.source_url} target="_blank" rel="noopener noreferrer"
+          className="flex items-center gap-1 text-[11px] font-bold text-neutral-500 hover:text-neutral-800 transition-colors"
+          onClick={e => e.stopPropagation()}>
+          <ExternalLink size={10} />{source.linkLabel}
+        </a>
+      )}
+      {signal.title && (
+        <div className="bg-[#EEEDFE] rounded-lg px-3 py-2">
+          <p className="text-[12px] font-bold text-[#3C3489] line-clamp-2">{signal.title}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SourceSlider({ source }: { source: typeof SOURCES[0] }) {
+  const { data: signals = [], isLoading } = useSWR(
+    `${API}/api/niches/signals?source=${source.id}&limit=12`,
+    fetcher,
+    { revalidateOnFocus: false }
+  )
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const scroll = (dir: "left" | "right") => {
+    scrollRef.current?.scrollBy({ left: dir === "right" ? 300 : -300, behavior: "smooth" })
+  }
+  if (isLoading) return (
+    <div className="mb-6">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[15px]">{source.icon}</span>
+        <span className="text-[14px] font-black text-[#0f0f0f]">{source.label}</span>
+        <div className="w-16 h-4 bg-neutral-200 rounded animate-pulse" />
+      </div>
+      <div className="flex gap-3">
+        {[1,2,3].map(i => <div key={i} className="flex-shrink-0 w-[280px] h-[180px] bg-neutral-100 rounded-xl animate-pulse" />)}
+      </div>
+    </div>
+  )
+  if (!signals.length) return null
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[15px]">{source.icon}</span>
+          <span className="text-[14px] font-black text-[#0f0f0f]">{source.label}</span>
+          <span className="text-[12px] font-semibold text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded-md">{signals.length} signals</span>
+        </div>
+        <div className="flex gap-1.5">
+          <button onClick={() => scroll("left")} className="w-7 h-7 rounded-lg border border-black/10 bg-white flex items-center justify-center text-neutral-500 hover:bg-neutral-50 transition-colors">
+            <ChevronRight size={13} className="rotate-180" />
+          </button>
+          <button onClick={() => scroll("right")} className="w-7 h-7 rounded-lg border border-black/10 bg-white flex items-center justify-center text-neutral-500 hover:bg-neutral-50 transition-colors">
+            <ChevronRight size={13} />
+          </button>
+        </div>
+      </div>
+      <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
+        {signals.map((signal: any) => (
+          <SignalCard key={signal.id} signal={signal} source={source} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Competition colors ─────────────────────────────────────────────────────
 const compColor: Record<string,string> = { low: '#27500A', medium: '#633806', high: '#A32D2D' }
 const compBg:    Record<string,string> = { low: '#EAF3DE', medium: '#FAEEDA', high: '#FCEBEB' }
@@ -376,6 +475,9 @@ export default function HomePage() {
             {niches.length > 0 && !scanning && (
               <HotBanners niches={niches} />
             )}
+
+            {/* Source sliders */}
+       canning && <div className="mb-2">{SOURCES.map(s => <SourceSlider key={s.id} source={s} />)}</div>}
 
             {/* Scan animation */}
             {scanning && <div className="mb-5"><ScanAnimation scanId={scanId||''} /></div>}
