@@ -112,7 +112,8 @@ def get_niche(niche_id: uuid.UUID):
         print(f"[Niche] Signals error: {e}")
         signals = []
     competitors = db.table("competitors").select("*").eq("niche_id", str(niche_id)).execute()
-    return {**niche.data, "signals": signals.data, "competitors": competitors.data}
+    competitors_data = competitors.data if hasattr(competitors, "data") else competitors
+    return {**niche.data, "signals": signals, "competitors": competitors_data}
 
 
 @router.get("/{niche_id}/roadmap")
