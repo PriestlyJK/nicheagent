@@ -109,6 +109,9 @@ def _run_scan(scan_id: str):
 
     try:
         # 1. Reddit (fixed async scraper)
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         signals = reddit.scrape_pain_signals(SCAN_TOPICS[:5])
         all_signals.extend(signals)
         sources_done.append("reddit")
@@ -142,7 +145,7 @@ def _run_scan(scan_id: str):
 
         # 5. App Store (fixed scraper with real 1-star reviews)
         for topic in SCAN_TOPICS[:2]:
-            app_signals = appstore.scrape_niche_reviews(topic)
+            app_signals = appstore.scrape_pain_signals([topic])
             all_signals.extend(app_signals)
         sources_done.append("appstore")
 
