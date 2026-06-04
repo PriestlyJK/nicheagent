@@ -1,111 +1,56 @@
-"""
-Reddit scraper via Arctic Shift API.
-No rate limits for normal usage. Sync. Simple.
-Returns posts with exact URLs.
-"""
 import httpx
 import time
 
-ARCTIC_BASE = "https://arctic-shift.photon-reddit.com/api"
+ARCTIC_BASE = "https://arctic-shift.photon-reddit.com"
+PAIN_SUBREDDITS = ["indiehackers", "SaaS", "startups", "microsaas", "nocode", "freelance"]
+PAIN_PHRASES = ["wish there was", "frustrated with", "no good solution", "sick of", "can't find a tool"]
 
-PAIN_SUBREDDITS = [
-    "indiehackers", "SaaS", "startups", "Entrepreneur",
-    "microsaas", "nocode", "webdev", "freelance",
-]
-
-PAIN_KEYWORDS = [
-    "I wish there was", "why is there no", "sick of",
-    "frustrated with", "can't find a tool", "no good solution",
-    "anyone else struggle", "biggest problem with",
-    "looking for software", "spending too much time",
-]
-
-
-def scrape_reddit_posts(query: str, limit: int = 15) -> list[dict]:
-    """Fetch posts from Arctic Shift for a query. Returns exact URLs."""
+def scrape_reddit_posts(query: str, subreddit: str = None, limit: int = 10) -> list[dict]:
     results = []
     try:
-        with httpx.Client(
-            headers={"User-Agent": "NicheAgent/1.0 research"},
-            timeout=15.0,
-        ) as client:
-            resp = client.get(
-                f"{ARCTIC_BASE}/posts/search",
-                params={
-                    "q": query,
-                    "limit": limit,
-                    "sort": "score",
-                },
-            )
+        params = {"limit": limit, "sort": "score", "body": query}
+        if subreddit:
+            params["subreddit"] = subreddit
+        with httpx.Client(headers={"User-Agent": "NicheAgent/1.0"}, timeout=15.0) as client:
+            resp = client.get(f"{ARCTIC_BASE}/api/posts/search", params=params)
             if resp.status_code != 200:
-                print(f"[Reddit] Arctic Shift error {resp.status_code} for '{query}'")
+                print(f"[Reddit] Error {resp.status_code} for '{query}'")
                 return []
-
-            data = resp.json()
-            posts = data.get("data", [])
-
-            for p in posts:
+            for p in resp.json().get("data", []):
                 body = p.get("selftext", "").strip()
-                if not body or body in ("[removed]", "[deleted]"):
+                if not body or body in ("[removed]", "[deleted]") or len(body) < 50:
                     continue
-                if len(body) < 50:
-                    continue
-
                 post_id = p.get("id", "")
                 sub = p.get("subreddit", "")
-                title = p.get("title", "").strip()
-                score = p.get("score", 0)
                 permalink = p.get("permalink", "")
-
-                if permalink:
-                    url = f"https://www.reddit.com{permalink}"
-                else:
-                    url = f"https://www.reddit.com/r/{sub}/comments/{post_id}/"
-
+                url = f"https://www.reddit.com{permalink}" if permalink else f"https://www.reddit.com/r/{sub}/comments/{post_id}/"
                 results.append({
-                    "source": "reddit",
-                    "source_url": url,
-                    "title": title,
-                    "content": f"{title}\n\n{body[:800]}",
-                    "score": score,
-                    "num_comments": p.get("num_comments", 0),
-                    "subreddit": sub,
-                    "author": p.get("author", ""),
-                    "metadata": {
-                        "score": score,
-                        "subreddit": sub,
-                        "post_id": post_id,
-                    }
+                    "source": "reddit", "source_url": url,
+                    "title": p.get("title", "").strip(),
+                    "content": f"{p.get('title','')}\n\n{body[:800]}",
+                    "score": p.get("score", 0), "num_comments": p.get("num_comments", 0),
+                    "subreddit": sub, "author": p.get("author", ""),
+                    "metadata": {"score": p.get("score", 0), "subreddit": sub},
                 })
-
     except Exception as e:
         print(f"[Reddit] Error for '{query}': {e}")
-
     return results
 
-
 def scrape_pain_signals(topics: list[str], limit_per_query: int = 10) -> list[dict]:
-    """
-    Scrape Reddit for pain signals.
-    Simple sync loop with 1s delay between requests to be polite.
-    """
     all_signals = []
     seen_urls = set()
-
-    queries = []
-    for topic in topics[:5]:
-        queries.append(topic)
-        for kw in PAIN_KEYWORDS[:3]:
-            queries.append(f"{topic} {kw}")
-
-    for query in queries:
-        posts = scrape_reddit_posts(query, limit=limit_per_query)
-        for p in posts:
-            url = p.get("source_url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                all_signals.append(p)
-        time.sleep(1.0)  # polite delay
-
-    print(f"[Reddit] Got {len(all_signals)} unique signals")
+    for topic in topics[:4]:
+        for phrase in PAIN_PHRASES[:3]:
+            for p in scrape_reddit_posts(f"{topic} {phrase}", limit=limit_per_query):
+                if p["source_url"] not in seen_urls:
+                    seen_urls.add(p["source_url"])
+                    all_signals.append(p)
+            time.sleep(1.5)
+        for sub in PAIN_SUBREDDITS[:3]:
+            for p in scrape_reddit_posts(topic, subreddit=sub, limit=8):
+                if p["source_url"] not in seen_urls:
+                    seen_urls.add(p["source_url"])
+                    all_signals.append(p)
+            time.sleep(1.5)
+    print(f"[Reddit] Got {len(all_signals)} signals")
     return all_signals
