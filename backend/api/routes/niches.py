@@ -239,6 +239,12 @@ def _run_scan(scan_id: str, custom_topics: list[str] = []):
                     niche["tags"] = []
 
                 n_clean = {k: v for k, v in niche.items() if k in NICHE_ALLOWED}
+                # Skip if too similar to existing niche
+                niche_name = n_clean.get("name", "")
+                if any(_similar(niche_name, ex) for ex in existing_names):
+                    print(f"[Scan] Skipped duplicate: {niche_name}")
+                    continue
+                existing_names.append(niche_name)
                 result = db.table("niches").insert(n_clean).execute()
 
                 if result.data:
