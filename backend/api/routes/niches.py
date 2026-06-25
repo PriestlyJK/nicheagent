@@ -132,6 +132,19 @@ def get_roadmap(
 
 
 # ── Background scan ────────────────────────────────────────────────────────
+
+def _similar(a: str, b: str) -> bool:
+    a_words = set(a.lower().split())
+    b_words = set(b.lower().split())
+    stop = {"for","the","a","an","and","or","of","in","to","with","&","platform","saas","tool","app","service","system"}
+    a_words -= stop
+    b_words -= stop
+    if not a_words or not b_words:
+        return False
+    overlap = len(a_words & b_words) / max(len(a_words), len(b_words))
+    return overlap >= 0.7
+
+
 def _run_scan(scan_id: str, custom_topics: list[str] = []):
     """
     Simple sync scan — no async, no event loop issues.
