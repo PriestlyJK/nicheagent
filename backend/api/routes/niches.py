@@ -5,7 +5,7 @@ from db.models import NicheOut, ScanOut
 from scrapers.appstore import scrape_appstore_signals
 from scrapers.reddit import scrape_pain_signals
 from scrapers.hackernews import scrape_hackernews
-from analysis.claude_client import analyze_signals, generate_roadmap
+from analysis.claude_client import analyze_signals, generate_roadmap, filter_duplicate_niches
 import uuid
 from datetime import datetime, timezone
 
@@ -220,6 +220,8 @@ def _run_scan(scan_id: str, custom_topics: list[str] = []):
 
         niches_data = analyze_signals(all_signals[:50], existing_names)
         print(f"[Scan] Claude found {len(niches_data)} niches")
+        niches_data = filter_duplicate_niches(niches_data, existing_names)
+        print(f"[Scan] After dedup: {len(niches_data)} niches")
 
         # ── 6. Save niches + competitors ──────────────────────────────────
         saved_count = 0

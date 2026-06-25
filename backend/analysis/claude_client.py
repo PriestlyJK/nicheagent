@@ -12,6 +12,47 @@ client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-opus-4-6"
 
 
+
+
+def filter_duplicate_niches(new_niches: list[dict], existing_names: list[str]) -> list[dict]:
+    """Use Claude to semantically filter out niches too similar to existing ones."""
+    if not existing_names or not new_niches:
+        return new_niches
+    
+    new_names = [n.get("name", "") for n in new_niches]
+    
+    prompt = f"""You are deduplicating startup niches. 
+    
+EXISTING niches already in database:
+{chr(10).join(f"- {n}" for n in existing_names[-50:])}
+
+NEW niches from this scan:
+{chr(10).join(f"- {n}" for n in new_names)}
+
+Return ONLY a JSON array of indices (0-based) of NEW niches that are NOT duplicates of existing ones.
+Two niches are duplicates if they target the same problem/market even with different wording.
+Example: "Reliable Salon Scheduling" and "Anti-Vagaro Beauty Platform" are duplicates.
+Return only the array, no explanation: [0, 2, 4]"""
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        import re
+        match = re.search(r'\[.*?\]', raw, re.DOTALL)
+        if match:
+            indices = json.loads(match.group())
+            result = [new_niches[i] for i in indices if i < len(new_niches)]
+            print(f"[Claude Dedup] {len(new_niches)} → {len(result)} niches after semantic dedup")
+            return result
+    except Exception as e:
+        print(f"[Claude Dedup] Error: {e}")
+    
+    return new_niches
+
 def analyze_signals(
     signals: list[dict],
     existing_names: list[str] = None,
